@@ -1,33 +1,30 @@
-FROM debian:trixie-slim
+FROM debian:bookworm-slim AS builder
 
-# Avoid interactive prompts
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install system dependencies
 RUN apt-get update && apt-get install -y \
-    ca-certificates \
     curl \
-    nodejs \
-    npm \
-    bubblewrap \
-    procps \
-    iproute2 \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user (recommended)
-RUN useradd -m executor
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
+ENV PATH="/root/.cargo/bin:$PATH"
 
-# Set workdir
+WORKDIR /build
+COPY . .
+RUN cargo build --release
+
+# ---- Runtime ----
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    nodejs \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
+COPY --from=builder /build/target/release/container_agent /app/executor
 
-# Copy Rust binary (assumes you build it locally)
-COPY target/release/container_agent /app/executor
-
-# Permissions
-RUN chown -R executor:executor /app
-
-# Expose port used by executor
 EXPOSE 8000
-
-# Start executor
 ENTRYPOINT ["/app/executor"]

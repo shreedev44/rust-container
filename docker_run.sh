@@ -3,7 +3,11 @@
 docker run \
   --rm \
   -p 8000:8000 \
-  --cap-add SYS_ADMIN \
-  --security-opt seccomp=unconfined \
-  --security-opt apparmor=unconfined \
+  --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+  --memory=256m \
+  --pids-limit=64 \
+  --cpus=0.5 \
+  --cap-drop=ALL \
+  --security-opt no-new-privileges \
   executor
+

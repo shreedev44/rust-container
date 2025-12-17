@@ -33,9 +33,6 @@ enum HandlerError {
     #[error("Failed to decode: {0}")]
     DecodeError(#[from] bincode::error::DecodeError),
 
-    #[error("Failed to establish pipe: {0}")]
-    PipError(#[from] nix::errno::Errno),
-
     // #[error("Thread join error: {0}")]
     // ThreadJoinError(String),
 }
@@ -79,26 +76,8 @@ fn handle_message(message: Message, stream: TcpStream) -> Result<(), HandlerErro
     let script_path = format!("{work_dir}/script.js");
     fs::write(&script_path, message.code)?;
 
-    let mut child = Command::new("bwrap")
-    .args([
-        "--ro-bind", "/usr", "/usr",
-        "--ro-bind", "/lib", "/lib",
-        "--ro-bind", "/lib64", "/lib64",
-        "--ro-bind", "/bin", "/bin",
-
-        "--bind", &work_dir, "/exec",
-
-        "--tmpfs", "/tmp",
-        "--proc", "/proc",
-        "--dev", "/dev",
-
-        // "--unshare-pid",
-        // "--unshare-net",
-        "--die-with-parent",
-
-        "/usr/bin/node",
-        "/exec/script.js",
-    ])
+    let mut child = Command::new("node")
+    .arg(&script_path)
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())

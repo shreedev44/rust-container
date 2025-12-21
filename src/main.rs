@@ -1,11 +1,6 @@
 use bincode::{Decode, Encode, config};
 use std::{
-    fs,
-    io::{BufRead, BufReader, Read, Write},
-    net::{TcpListener, TcpStream},
-    process::{Command, Stdio},
-    sync::{Arc, Mutex},
-    thread,
+    fs, io::{BufRead, BufReader, Read, Write}, net::{TcpListener, TcpStream}, process::{Child, Command, Stdio}, sync::{Arc, Mutex}, thread::{self, JoinHandle}
 };
 use uuid::Uuid;
 
@@ -32,9 +27,6 @@ enum HandlerError {
 
     #[error("Failed to decode: {0}")]
     DecodeError(#[from] bincode::error::DecodeError),
-
-    // #[error("Thread join error: {0}")]
-    // ThreadJoinError(String),
 }
 
 fn main() -> Result<(), HandlerError> {
@@ -70,49 +62,41 @@ fn handle_request(mut stream: TcpStream) -> Result<(), HandlerError> {
 
 fn handle_message(message: Message, stream: TcpStream) -> Result<(), HandlerError> {
     let uuid = Uuid::new_v4();
-    let work_dir = format!("/tmp/executions/{uuid}");
-    
+    let work_dir = format!("/work/executions/{uuid}");
     fs::create_dir_all(&work_dir)?;
     
-    let script_path = format!("{work_dir}/script.js");
+    let script_path = format!("{work_dir}/main.rs");
     fs::write(&script_path, message.code)?;
+    let executable_path = format!("{}/main", &work_dir);
 
-    let mut child = Command::new("node")
-    .arg(&script_path)
+    let mut child = Command::new("rustc")
+        .args([
+            &script_path,
+            "-o",
+            &executable_path
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let shared_stream = Arc::new(Mutex::new(stream));
+
+    let (out_handle, _err_handle) = get_out_err_handlers(&shared_stream, &mut child);
+
+    let status = child.wait()?;
+    let _ = out_handle.join();
+    // let _ = err_handle.join();
+
+    if !status.success() {
+        return Ok(())
+    }
+
+    let mut child = Command::new(executable_path)
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
     .spawn()?;
-
-
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
-
-    let shared_stream = Arc::new(Mutex::new(stream));
-
-    // stdout thread
-    let out_stream = Arc::clone(&shared_stream);
-    let out_handle = thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            if let Ok(l) = line {
-                let mut s = out_stream.lock().unwrap();
-                let _ = writeln!(s, "{l}");
-            }
-        }
-    });
     
-    // stderr thread
-    let err_stream = Arc::clone(&shared_stream);
-    let err_handle = thread::spawn(move || {
-        let reader = BufReader::new(stderr);
-        for line in reader.lines() {
-            if let Ok(l) = line {
-                let mut s = err_stream.lock().unwrap();
-                let _ = writeln!(s, "{l}");
-            }
-        }
-    });
+    let (out_handle, err_handle) = get_out_err_handlers(&shared_stream, &mut child);
 
     let status = child.wait()?;
     let _ = out_handle.join();
@@ -141,3 +125,34 @@ fn read_content_from_stream(stream: &mut TcpStream) -> Result<Message, HandlerEr
         bincode::decode_from_slice(&message_buffer[..], config::standard())?;
     Ok(message)
 }
+
+fn get_out_err_handlers(shared_stream: &Arc<Mutex<TcpStream>>, child: &mut Child) -> (JoinHandle<()>, JoinHandle<()>) {
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+
+    // stdout thread
+    let out_stream = Arc::clone(&shared_stream);
+    let out_handle = thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            if let Ok(l) = line {
+                let mut s = out_stream.lock().unwrap();
+                let _ = writeln!(s, "{l}");
+            }
+        }
+    });
+    
+    // stderr thread
+    let err_stream = Arc::clone(&shared_stream);
+    let err_handle = thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines() {
+            if let Ok(l) = line {
+                let mut s = err_stream.lock().unwrap();
+                let _ = writeln!(s, "{l}");
+            }
+        }
+    });
+
+    (out_handle, err_handle)
+} 

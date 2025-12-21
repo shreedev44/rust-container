@@ -1,23 +1,33 @@
-FROM alpine:3.20
+FROM debian:bookworm-slim
 
-RUN apk add --no-cache \
-    nodejs \
-    ca-certificates
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ---- System deps ----
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+ && rm -rf /var/lib/apt/lists/*
 
 # ---- Create non-root user ----
-RUN adduser -D -u 10001 executor
+RUN useradd -m -u 10001 executor
 
-RUN chmod 1777 /tmp
+USER executor
+WORKDIR /home/executor
 
-# ---- App directory (read-only at runtime) ----
+# ---- Install Rust AS executor ----
+RUN curl https://sh.rustup.rs -sSf | sh -s -- \
+    -y \
+    --profile minimal \
+    --default-toolchain stable
+
+ENV PATH="/home/executor/.cargo/bin:${PATH}"
+
+# ---- App ----
 WORKDIR /app
 COPY target/x86_64-unknown-linux-musl/release/container_agent /app/executor
 
-RUN chmod +x /app/executor \
-    && chown executor:executor /app/executor
-
-USER executor
-
 EXPOSE 8000
-
 ENTRYPOINT ["/app/executor"]

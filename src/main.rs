@@ -1,6 +1,11 @@
 use bincode::{Decode, Encode, config};
 use std::{
-    fs, io::{BufRead, BufReader, Read, Write}, net::{TcpListener, TcpStream}, process::{Child, Command, Stdio}, sync::{Arc, Mutex}, thread::{self, JoinHandle}
+    fs,
+    io::{BufRead, BufReader, Read, Write},
+    net::{TcpListener, TcpStream},
+    process::{Child, Command, Stdio},
+    sync::{Arc, Mutex},
+    thread::{self, JoinHandle},
 };
 use uuid::Uuid;
 
@@ -64,17 +69,13 @@ fn handle_message(message: Message, stream: TcpStream) -> Result<(), HandlerErro
     let uuid = Uuid::new_v4();
     let work_dir = format!("/work/executions/{uuid}");
     fs::create_dir_all(&work_dir)?;
-    
+
     let script_path = format!("{work_dir}/main.rs");
     fs::write(&script_path, message.code)?;
     let executable_path = format!("{}/main", &work_dir);
 
     let mut child = Command::new("rustc")
-        .args([
-            &script_path,
-            "-o",
-            &executable_path
-        ])
+        .args([&script_path, "-o", &executable_path])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
@@ -87,15 +88,15 @@ fn handle_message(message: Message, stream: TcpStream) -> Result<(), HandlerErro
     // let _ = err_handle.join();
 
     if !status.success() {
-        return Ok(())
+        return Ok(());
     }
 
     let mut child = Command::new(executable_path)
-    .stdin(Stdio::piped())
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped())
-    .spawn()?;
-    
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
     let (out_handle, err_handle) = get_out_err_handlers(&shared_stream, &mut child);
 
     let status = child.wait()?;
@@ -109,7 +110,7 @@ fn handle_message(message: Message, stream: TcpStream) -> Result<(), HandlerErro
 
     fs::remove_dir_all(&work_dir)?;
 
-    Ok(())
+    clean_up()
 }
 
 fn read_content_from_stream(stream: &mut TcpStream) -> Result<Message, HandlerError> {
@@ -126,7 +127,10 @@ fn read_content_from_stream(stream: &mut TcpStream) -> Result<Message, HandlerEr
     Ok(message)
 }
 
-fn get_out_err_handlers(shared_stream: &Arc<Mutex<TcpStream>>, child: &mut Child) -> (JoinHandle<()>, JoinHandle<()>) {
+fn get_out_err_handlers(
+    shared_stream: &Arc<Mutex<TcpStream>>,
+    child: &mut Child,
+) -> (JoinHandle<()>, JoinHandle<()>) {
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
 
@@ -141,7 +145,7 @@ fn get_out_err_handlers(shared_stream: &Arc<Mutex<TcpStream>>, child: &mut Child
             }
         }
     });
-    
+
     // stderr thread
     let err_stream = Arc::clone(&shared_stream);
     let err_handle = thread::spawn(move || {
@@ -155,4 +159,16 @@ fn get_out_err_handlers(shared_stream: &Arc<Mutex<TcpStream>>, child: &mut Child
     });
 
     (out_handle, err_handle)
-} 
+}
+
+fn clean_up() -> Result<(), HandlerError> {
+    let _ = Command::new("find")
+        .args(["/work", "-mindepth", "1", "-delete"])
+        .status()?;
+
+    let _ = Command::new("find")
+        .args(["/tmp", "-mindepth", "1", "-delete"])
+        .status()?;
+
+    Ok(())
+}

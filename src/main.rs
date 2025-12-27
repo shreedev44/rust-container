@@ -1,5 +1,6 @@
 use bincode::{Decode, Encode, config};
 use std::{
+    array::TryFromSliceError,
     fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -20,15 +21,14 @@ struct ExecRequest {
     timeout_ms: u64,
 }
 
-
 #[derive(Clone, Copy)]
 enum FrameType {
     ExecRequest = 1,
-    Stdin       = 2,
-    Stdout      = 3,
-    Stderr      = 4,
-    Exit        = 5,
-    Error       = 6,
+    Stdin = 2,
+    Stdout = 3,
+    Stderr = 4,
+    Exit = 5,
+    Error = 6,
 }
 
 impl FrameType {
@@ -55,6 +55,15 @@ enum HandlerError {
 
     #[error("Failed to decode: {0}")]
     DecodeError(#[from] bincode::error::DecodeError),
+
+    #[error("Child process {0} was not captured (is it piped?)")]
+    StdioNotCaptured(String),
+
+    #[error("Failed to read frame header")]
+    InvalidFrameHeader,
+
+    #[error("Failed to convert into: {0}")]
+    IntoError(#[from] TryFromSliceError),
 }
 
 fn main() -> Result<(), HandlerError> {
@@ -108,8 +117,15 @@ fn handle_message(request: ExecRequest, mut stream: TcpStream) -> Result<(), Han
     let out_stream = stream.try_clone()?;
     let err_stream = stream.try_clone()?;
 
-    stream_pipe(child.stdout.take().unwrap(), out_stream, FrameType::Stdout);
-    stream_pipe(child.stderr.take().unwrap(), err_stream, FrameType::Stderr);
+    let Some(stdout) = child.stdout.take() else {
+        return Err(HandlerError::StdioNotCaptured("stdout".to_string()));
+    };
+    let Some(stderr) = child.stderr.take() else {
+        return Err(HandlerError::StdioNotCaptured("stderr".to_string()));
+    };
+
+    stream_pipe(stdout, out_stream, FrameType::Stdout);
+    stream_pipe(stderr, err_stream, FrameType::Stderr);
 
     let status = child.wait()?;
 
@@ -127,10 +143,19 @@ fn handle_message(request: ExecRequest, mut stream: TcpStream) -> Result<(), Han
     let err_stream = stream.try_clone()?;
     let in_stream = stream.try_clone()?;
 
-    stream_pipe(child.stdout.take().unwrap(), out_stream, FrameType::Stdout);
-    stream_pipe(child.stderr.take().unwrap(), err_stream, FrameType::Stderr);
+    let Some(stdout) = child.stdout.take() else {
+        return Err(HandlerError::StdioNotCaptured("stdout".to_string()));
+    };
+    let Some(stderr) = child.stderr.take() else {
+        return Err(HandlerError::StdioNotCaptured("stderr".to_string()));
+    };
 
-    let stdin = child.stdin.take().unwrap();
+    stream_pipe(stdout, out_stream, FrameType::Stdout);
+    stream_pipe(stderr, err_stream, FrameType::Stderr);
+
+    let Some(stdin) = child.stdin.take() else {
+        return Err(HandlerError::StdioNotCaptured("stdin".to_string()));
+    };
 
     let child_done = Arc::new(AtomicBool::new(false));
     let done_flag = child_done.clone();
@@ -143,18 +168,13 @@ fn handle_message(request: ExecRequest, mut stream: TcpStream) -> Result<(), Han
 
     child_done.store(true, Ordering::Relaxed);
 
-
     let code = status.code().unwrap_or(-1);
     send_frame(&mut stream, FrameType::Exit, &code.to_be_bytes())?;
     fs::remove_dir_all(&work_dir)?;
     clean_up()
 }
 
-fn handle_stdin(
-    mut child_stdin: impl Write,
-    mut stream: TcpStream,
-    child_done: Arc<AtomicBool>,
-) {
+fn handle_stdin(mut child_stdin: impl Write, mut stream: TcpStream, child_done: Arc<AtomicBool>) {
     while !child_done.load(Ordering::Acquire) {
         match read_frame(&mut stream) {
             Ok(Some((FrameType::Stdin, payload))) => {
@@ -213,32 +233,30 @@ fn clean_up() -> Result<(), HandlerError> {
     Ok(())
 }
 
-
-fn send_frame(
-    stream: &mut TcpStream,
-    typ: FrameType,
-    payload: &[u8],
-) -> std::io::Result<()> {
+fn send_frame(stream: &mut TcpStream, typ: FrameType, payload: &[u8]) -> std::io::Result<()> {
     stream.write_all(&[typ as u8])?;
     stream.write_all(&(payload.len() as u32).to_be_bytes())?;
     stream.write_all(payload)?;
     stream.flush()
 }
 
-
-fn read_frame(stream: &mut TcpStream) -> std::io::Result<Option<(FrameType, Vec<u8>)>> {
+fn read_frame(stream: &mut TcpStream) -> Result<Option<(FrameType, Vec<u8>)>, HandlerError> {
     let mut header = [0u8; 5];
 
     if let Err(e) = stream.read_exact(&mut header) {
         if e.kind() == std::io::ErrorKind::UnexpectedEof {
             return Ok(None);
         }
-        return Err(e);
+        return Err(HandlerError::IoError(e));
     }
 
-    let len = u32::from_be_bytes(header[1..5].try_into().unwrap());
+    let header_ne_bytes = header[1..5].try_into()?;
+    let len = u32::from_be_bytes(header_ne_bytes);
     let mut payload = vec![0; len as usize];
     stream.read_exact(&mut payload)?;
 
-    Ok(Some((FrameType::from_u8(header[0]).unwrap(), payload)))
+    let Some(frame_type) = FrameType::from_u8(header[0]) else {
+        return Err(HandlerError::InvalidFrameHeader)
+    };
+    Ok(Some((frame_type, payload)))
 }

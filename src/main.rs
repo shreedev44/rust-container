@@ -1,14 +1,14 @@
 use bincode::{Decode, Encode, config};
 use std::{
     fs,
-    io::{BufRead, BufReader, Read, Write},
+    io::{Read, Write},
     net::{TcpListener, TcpStream},
-    process::{Child, Command, ExitStatus, Stdio},
+    process::{Command, Stdio},
     sync::{
-        Arc, Mutex, MutexGuard,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
-    thread::{self, JoinHandle},
+    thread::{self},
 };
 use uuid::Uuid;
 

@@ -11,5 +11,5 @@ docker run \
   --cpus=0.5 \
   --cap-drop=ALL \
   --security-opt no-new-privileges \
-  executor-rust
+  executor-rust:1.0.0
 

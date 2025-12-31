@@ -3,7 +3,7 @@ use std::{
     array::TryFromSliceError,
     fs,
     io::{Read, Write},
-    net::{TcpListener, TcpStream},
+    net::{Shutdown, TcpListener, TcpStream},
     process::{Command, Stdio},
     sync::{
         Arc,
@@ -79,7 +79,10 @@ fn listen_to_port(port: u16) -> Result<(), HandlerError> {
     for stream_res in listener.incoming() {
         match stream_res {
             Ok(stream) => {
-                handle_request(stream)?;
+                let handle_stream = stream.try_clone()?;
+                if let Err(_) = handle_request(handle_stream) {
+                    clean_up()?;
+                }
             }
             Err(e) => {
                 eprintln!("Accept error: {}", e);
